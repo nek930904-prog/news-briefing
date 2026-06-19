@@ -184,13 +184,83 @@ def fetch_market_quotes():
 # ══════════════════════════════════════════════════════════
 # 2단계: Claude로 요약
 # ══════════════════════════════════════════════════════════
+def _claude_text(prompt, max_tokens=12000):
+    """프롬프트를 Claude(스트리밍)로 보내고 결과 텍스트를 받아옵니다. (일간·주간 공용)"""
+    client = Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=3)
+    try:
+        chunks = []
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                chunks.append(text)
+        return "".join(chunks).strip()
+    except Exception as e:
+        print("❌ Claude 호출 실패:", type(e).__name__, "-", e)
+        cause = getattr(e, "__cause__", None)
+        if cause is not None:
+            print("   ↳ 실제 원인:", type(cause).__name__, "-", cause)
+        print("   진단정보: 키 길이", len(ANTHROPIC_API_KEY),
+              "/ sk-ant- 시작:", ANTHROPIC_API_KEY.startswith("sk-ant-"),
+              "/ 모델:", CLAUDE_MODEL)
+        raise
+
+
+def parse_briefing(raw):
+    """
+    Claude가 보낸 표시(@HEADLINE@/@SECTION@/@SUMMARY@/@LINK@) 텍스트를
+    {headline, sections} 구조로 해석합니다. (일간·주간 공용)
+    """
+    headline = []
+    sections = []
+    cur = None        # 현재 작성 중인 섹션
+    mode = None       # 'headline' 또는 'section'
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.startswith("@HEADLINE@"):
+            mode = "headline"
+            continue
+        if s.startswith("@SECTION@"):
+            title = s[len("@SECTION@"):].strip()
+            cur = {"title": title, "summary": "", "body_lines": [], "links": []}
+            sections.append(cur)
+            mode = "section"
+            continue
+        if s.startswith("@SUMMARY@"):
+            if cur is not None:
+                cur["summary"] = s[len("@SUMMARY@"):].strip()
+            continue
+        if s.startswith("@LINK@"):
+            rest = s[len("@LINK@"):].strip()
+            t, _, u = rest.partition("|||")
+            if cur is not None and u.strip():
+                cur["links"].append({"title": t.strip() or "기사", "url": u.strip()})
+            continue
+        if mode == "headline":
+            if s:
+                headline.append(s.lstrip("-•").strip())
+        elif mode == "section" and cur is not None:
+            cur["body_lines"].append(line)
+
+    for sec in sections:
+        sec["body"] = "\n".join(sec.pop("body_lines")).strip()
+
+    if not sections:
+        print("   ⚠️ 형식을 못 읽어서 원문을 그대로 한 섹션에 담아요.")
+        sections = [{"title": "브리핑", "summary": "", "body": raw, "links": []}]
+    if not headline:
+        headline = ["증시 브리핑"]
+    return {"headline": headline, "sections": sections}
+
+
 def summarize_with_claude(items, date_label, quotes=""):
     """
     모은 뉴스와 시세를 Claude에게 주고, 정해진 7개 구조의 브리핑을
     표시(@SECTION@ 등) 형식으로 받아옵니다.
     """
     print("🤖 2단계: Claude가 뉴스를 요약하는 중입니다...")
-    client = Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=3)
 
     # 뉴스 목록을 번호 붙여 텍스트로 정리 (Claude가 링크를 인용할 수 있게)
     news_lines = []
@@ -223,6 +293,7 @@ def summarize_with_claude(items, date_label, quotes=""):
   · 부연/세부는 그 아래 두 칸 들여쓴 하위 글머리표("  - ")로 1~2개 덧붙일 수 있음
   · 문장은 "~음/~함/~됨" 같은 간결한 개조식 어미로 끝맺기 (긴 설명체 금지)
 - 마크다운/HTML(**굵게**, <br>, # 등)은 쓰지 마세요. 글머리표는 위 규칙대로 "- "만 사용.
+- 본문에 "(뉴스 [3])" 같은 번호 표시는 쓰지 마세요. 출처는 오직 @LINK@ 줄로만 표시하세요.
 - 정말 중요한 핵심 수치·키워드는 ==이렇게== 등호 두 개로 감싸면 노란 형광펜이 됩니다.
   남용하지 말고 줄마다 핵심 1개 정도만.
 - @SUMMARY@ 한 줄 요약은 친근한 한 문장("~예요")으로 부드럽게 써서 먼저 감을 잡게 하세요.
@@ -277,75 +348,8 @@ def summarize_with_claude(items, date_label, quotes=""):
 @LINK@ 기사 제목 ||| https://링크주소
 """
 
-    try:
-        # 스트리밍으로 받습니다. 글자를 조금씩 흘려받으면, 답변이 길어 오래 걸려도
-        # 연결이 끊기거나(Connection error) 시간 초과(Timeout)되는 것을 막아줘요.
-        # (GitHub Actions 같은 환경에서 특히 중요합니다.)
-        chunks = []
-        with client.messages.stream(
-            model=CLAUDE_MODEL,
-            max_tokens=12000,  # 요약+상세 6개 섹션이라 넉넉히 (잘림 방지)
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                chunks.append(text)
-        raw = "".join(chunks).strip()
-    except Exception as e:
-        # 오류가 나면 진짜 속 원인까지 화면에 찍어서 진단하기 쉽게 합니다.
-        print("❌ Claude 호출 실패:", type(e).__name__, "-", e)
-        cause = getattr(e, "__cause__", None)
-        if cause is not None:
-            print("   ↳ 실제 원인:", type(cause).__name__, "-", cause)
-        print("   진단정보: 키 길이", len(ANTHROPIC_API_KEY),
-              "/ sk-ant- 시작:", ANTHROPIC_API_KEY.startswith("sk-ant-"),
-              "/ 모델:", CLAUDE_MODEL)
-        raise
-
-    # ── 표시(@HEADLINE@ / @SECTION@ / @LINK@)를 줄 단위로 해석합니다 ──
-    headline = []
-    sections = []
-    cur = None        # 현재 작성 중인 섹션
-    mode = None       # 'headline' 또는 'section'
-    for line in raw.splitlines():
-        s = line.strip()
-        if s.startswith("@HEADLINE@"):
-            mode = "headline"
-            continue
-        if s.startswith("@SECTION@"):
-            title = s[len("@SECTION@"):].strip()
-            cur = {"title": title, "summary": "", "body_lines": [], "links": []}
-            sections.append(cur)
-            mode = "section"
-            continue
-        if s.startswith("@SUMMARY@"):
-            if cur is not None:
-                cur["summary"] = s[len("@SUMMARY@"):].strip()
-            continue
-        if s.startswith("@LINK@"):
-            rest = s[len("@LINK@"):].strip()
-            t, _, u = rest.partition("|||")
-            if cur is not None and u.strip():
-                cur["links"].append({"title": t.strip() or "기사", "url": u.strip()})
-            continue
-        # 일반 줄
-        if mode == "headline":
-            if s:
-                headline.append(s.lstrip("-•").strip())
-        elif mode == "section" and cur is not None:
-            cur["body_lines"].append(line)
-
-    # 본문 줄들을 하나의 문자열로 합칩니다.
-    for sec in sections:
-        sec["body"] = "\n".join(sec.pop("body_lines")).strip()
-
-    # 혹시 형식을 못 따랐을 때를 대비한 안전장치
-    if not sections:
-        print("   ⚠️ 형식을 못 읽어서 원문을 그대로 한 섹션에 담아요.")
-        sections = [{"title": "브리핑", "body": raw, "links": []}]
-    if not headline:
-        headline = ["오늘의 증시 브리핑"]
-
-    data = {"headline": headline, "sections": sections}
+    raw = _claude_text(prompt)
+    data = parse_briefing(raw)
     print("🤖 요약 완료!\n")
     return data
 
@@ -461,8 +465,8 @@ def build_notion_blocks(data, date_label):
     """Claude가 준 JSON을 노션 '블록'(문단/제목/목록)으로 바꿉니다."""
     blocks = []
 
-    # 1. 오늘의 핵심 (3줄 요약)
-    blocks.append(_heading("📌 오늘의 핵심"))
+    # 1. 핵심 요약 (3줄) — 일간은 "오늘의 핵심", 주간은 "이번 주 핵심"
+    blocks.append(_heading(data.get("headline_label", "📌 오늘의 핵심")))
     for line in data.get("headline", []):
         blocks.append(_bullet(line))
 
@@ -504,11 +508,10 @@ def _split_paragraphs(text, limit=1800):
     return result
 
 
-def create_notion_page(data, date_label):
-    """노션 부모 페이지 아래에 새 하위 페이지를 만들고 내용을 채웁니다."""
+def create_notion_page(data, title):
+    """노션 부모 페이지 아래에 'title' 제목의 새 하위 페이지를 만들고 내용을 채웁니다."""
     print("📝 3단계: 노션에 브리핑 페이지를 만드는 중입니다...")
-    title = f"증시 브리핑 - {date_label} 아침"
-    blocks = build_notion_blocks(data, date_label)
+    blocks = build_notion_blocks(data, title)
 
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -564,7 +567,7 @@ def main():
 
     quotes = fetch_market_quotes()
     data = summarize_with_claude(items, date_label, quotes)
-    create_notion_page(data, date_label)
+    create_notion_page(data, f"증시 브리핑 - {date_label} 아침")
 
 
 if __name__ == "__main__":

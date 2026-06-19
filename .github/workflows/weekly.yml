@@ -1,0 +1,31 @@
+name: 주간 증시 브리핑 자동 작성
+
+on:
+  schedule:
+    # 한국 일요일 18:00 = UTC 일요일 09:00 이므로 "0 9 * * 0" 입니다.
+    # (cron의 요일에서 0 = 일요일)
+    - cron: "0 9 * * 0"
+  # 버튼으로 수동 실행도 가능하게 (테스트용)
+  workflow_dispatch:
+
+jobs:
+  run-weekly-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 라이브러리 설치
+        run: pip install -r requirements.txt
+
+      - name: 주간 브리핑 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+        run: python weekly.py

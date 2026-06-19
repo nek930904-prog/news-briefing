@@ -35,7 +35,10 @@ python main.py
 - 자동실행: GitHub → Settings → Secrets and variables → Actions 에 같은 이름으로 등록
 
 ## 자동실행
-`.github/workflows/briefing.yml` 이 매일 UTC 22:00 (= 한국 07:00)에 실행합니다.
+- **일간**: `.github/workflows/briefing.yml` → 매일 UTC 22:00 (= 한국 07:00) 실행 (`main.py`)
+- **주간**: `.github/workflows/weekly.yml` → 매주 일요일 UTC 09:00 (= 한국 18:00) 실행 (`weekly.py`)
+  - 주제: "핫 섹터의 변화 흐름". 섹터 ETF·지수의 주간 등락을 받아와 뜬/식은 섹터와 자금 로테이션을 정리합니다.
+
 깃허브 저장소의 Actions 탭에서 직접 실행(workflow_dispatch)으로 테스트도 가능합니다.
 
 ## 뉴스 출처 바꾸기
