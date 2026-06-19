@@ -31,9 +31,11 @@ from feeds import FEEDS, KEYWORDS
 load_dotenv()
 
 # ── 환경변수(비밀값) 읽기 ───────────────────────────────
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-NOTION_PARENT_PAGE_ID = os.environ.get("NOTION_PARENT_PAGE_ID")
+# .strip(): 복사할 때 끝에 딸려온 공백·줄바꿈을 제거합니다.
+# (키에 줄바꿈이 끼면 인증 헤더가 깨져 'Connection error'가 날 수 있어요)
+ANTHROPIC_API_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+NOTION_TOKEN = (os.environ.get("NOTION_TOKEN") or "").strip()
+NOTION_PARENT_PAGE_ID = (os.environ.get("NOTION_PARENT_PAGE_ID") or "").strip()
 
 # 한국 시간(KST = UTC+9)
 KST = timezone(timedelta(hours=9))
