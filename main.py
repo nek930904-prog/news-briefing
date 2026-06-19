@@ -148,8 +148,7 @@ def summarize_with_claude(items, date_label):
     JSON 형태로 받아옵니다. (JSON이라야 노션에 깔끔히 옮길 수 있어요)
     """
     print("🤖 2단계: Claude가 뉴스를 요약하는 중입니다...")
-    # timeout 넉넉히, 재시도 횟수 지정
-    client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=3)
+    client = Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=3)
 
     # 뉴스 목록을 번호 붙여 텍스트로 정리 (Claude가 링크를 인용할 수 있게)
     news_lines = []
@@ -162,6 +161,8 @@ def summarize_with_claude(items, date_label):
     news_block = "\n".join(news_lines)
 
     # Claude에게 줄 지시문(프롬프트)
+    # JSON 대신 '표시(@SECTION@ 등)' 형식을 쓰는 이유: 본문에 따옴표·줄바꿈이 들어가도
+    # 절대 깨지지 않아서 매일 도는 자동화에 훨씬 안정적이에요.
     prompt = f"""당신은 친근한 증시 브리핑 작가입니다. 아래 오늘({date_label})의 뉴스 목록을 바탕으로
 한국어 증시 브리핑을 작성하세요.
 
@@ -169,34 +170,62 @@ def summarize_with_claude(items, date_label):
 - 친근한 설명체("~예요", "~인데요")로, 너무 짧지 않게 "왜 그런지"까지 풀어서 설명하세요.
 - 아래 뉴스에 근거해서 쓰고, 근거가 부족한 항목은 솔직히 "관련 뉴스가 적었어요"라고 쓰세요.
 - 절대 사실을 지어내지 마세요.
-- 각 섹션 본문에서 참고한 뉴스의 링크를 links 목록에 넣으세요.
+- 각 섹션마다 참고한 뉴스 링크를 @LINK@ 줄로 넣으세요.
+- 본문에는 마크다운/HTML 표시(**굵게**, <br>, #, - 목록기호 등)를 쓰지 마세요.
+  일반 문장과 엔터(줄바꿈)만 사용하세요. (노션에 그대로 글자로 보이기 때문이에요)
 
 [뉴스 목록]
 {news_block}
 
 [출력 형식]
-반드시 아래 JSON 형식 "그대로" 출력하세요. 다른 말, 설명, 코드블록 표시(```)는 절대 넣지 마세요.
-{{
-  "headline": ["핵심 1줄", "핵심 1줄", "핵심 1줄"],
-  "sections": [
-    {{"title": "거시경제 — 큰 그림", "body": "여러 문단 가능한 본문", "links": [{{"title": "기사 제목", "url": "링크"}}]}},
-    {{"title": "해외 증시 — 미국 & 암호화폐", "body": "...", "links": []}},
-    {{"title": "국내 증시 — 코스피 & 코스닥", "body": "...", "links": []}},
-    {{"title": "섹터 — 오늘 움직인 업종", "body": "...", "links": []}},
-    {{"title": "개별 주식 — 눈에 띈 종목", "body": "...", "links": []}},
-    {{"title": "관전 포인트 — 오늘·이번 주 챙길 것", "body": "...", "links": []}}
-  ]
-}}
+아래 형식을 "그대로" 지켜서 작성하세요. 표시(@HEADLINE@, @SECTION@, @LINK@)는 정확히 그대로 쓰고,
+코드블록(```)이나 다른 설명은 넣지 마세요. 링크 줄은 "제목 ||| 주소" 형태로 쓰세요.
+
+@HEADLINE@
+- (오늘의 핵심 한 줄)
+- (오늘의 핵심 한 줄)
+- (오늘의 핵심 한 줄)
+
+@SECTION@ 거시경제 — 큰 그림
+(본문. 여러 문단 가능. 따옴표·줄바꿈 자유롭게 사용해도 됩니다.)
+@LINK@ 기사 제목 ||| https://링크주소
+
+@SECTION@ 해외 증시 — 미국 & 암호화폐
+(본문)
+@LINK@ 기사 제목 ||| https://링크주소
+
+@SECTION@ 국내 증시 — 코스피 & 코스닥
+(본문)
+@LINK@ 기사 제목 ||| https://링크주소
+
+@SECTION@ 섹터 — 오늘 움직인 업종
+(본문)
+@LINK@ 기사 제목 ||| https://링크주소
+
+@SECTION@ 개별 주식 — 눈에 띈 종목
+(본문)
+@LINK@ 기사 제목 ||| https://링크주소
+
+@SECTION@ 관전 포인트 — 오늘·이번 주 챙길 것
+(본문)
+@LINK@ 기사 제목 ||| https://링크주소
 """
 
     try:
-        message = client.messages.create(
+        # 스트리밍으로 받습니다. 글자를 조금씩 흘려받으면, 답변이 길어 오래 걸려도
+        # 연결이 끊기거나(Connection error) 시간 초과(Timeout)되는 것을 막아줘요.
+        # (GitHub Actions 같은 환경에서 특히 중요합니다.)
+        chunks = []
+        with client.messages.stream(
             model=CLAUDE_MODEL,
-            max_tokens=8000,  # 6개 섹션을 길게 쓰므로 넉넉히 (4000은 중간에 잘릴 수 있음)
+            max_tokens=8000,  # 6개 섹션을 길게 쓰므로 넉넉히
             messages=[{"role": "user", "content": prompt}],
-        )
+        ) as stream:
+            for text in stream.text_stream:
+                chunks.append(text)
+        raw = "".join(chunks).strip()
     except Exception as e:
-        # 연결 오류 등이 나면, 진짜 속 원인까지 화면에 찍어서 진단하기 쉽게 합니다.
+        # 오류가 나면 진짜 속 원인까지 화면에 찍어서 진단하기 쉽게 합니다.
         print("❌ Claude 호출 실패:", type(e).__name__, "-", e)
         cause = getattr(e, "__cause__", None)
         if cause is not None:
@@ -205,28 +234,48 @@ def summarize_with_claude(items, date_label):
               "/ sk-ant- 시작:", ANTHROPIC_API_KEY.startswith("sk-ant-"),
               "/ 모델:", CLAUDE_MODEL)
         raise
-    raw = message.content[0].text.strip()
 
-    # 혹시 코드블록(```)으로 감싸서 왔으면 벗겨냅니다.
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if raw.lower().startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
+    # ── 표시(@HEADLINE@ / @SECTION@ / @LINK@)를 줄 단위로 해석합니다 ──
+    headline = []
+    sections = []
+    cur = None        # 현재 작성 중인 섹션
+    mode = None       # 'headline' 또는 'section'
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.startswith("@HEADLINE@"):
+            mode = "headline"
+            continue
+        if s.startswith("@SECTION@"):
+            title = s[len("@SECTION@"):].strip()
+            cur = {"title": title, "body_lines": [], "links": []}
+            sections.append(cur)
+            mode = "section"
+            continue
+        if s.startswith("@LINK@"):
+            rest = s[len("@LINK@"):].strip()
+            t, _, u = rest.partition("|||")
+            if cur is not None and u.strip():
+                cur["links"].append({"title": t.strip() or "기사", "url": u.strip()})
+            continue
+        # 일반 줄
+        if mode == "headline":
+            if s:
+                headline.append(s.lstrip("-•").strip())
+        elif mode == "section" and cur is not None:
+            cur["body_lines"].append(line)
 
-    # 앞뒤에 설명 문장이 붙어 와도, 가장 바깥 중괄호 { } 부분만 잘라냅니다.
-    start = raw.find("{")
-    end = raw.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        raw = raw[start:end + 1]
+    # 본문 줄들을 하나의 문자열로 합칩니다.
+    for sec in sections:
+        sec["body"] = "\n".join(sec.pop("body_lines")).strip()
 
-    try:
-        # strict=False: 본문 안에 줄바꿈(엔터)이 들어 있어도 너그럽게 읽습니다.
-        data = json.loads(raw, strict=False)
-    except json.JSONDecodeError:
-        print("   ⚠️ Claude 응답을 JSON으로 읽지 못했어요. 원문을 그대로 사용합니다.")
-        data = {"headline": ["오늘의 브리핑"], "sections": [{"title": "브리핑", "body": raw, "links": []}]}
+    # 혹시 형식을 못 따랐을 때를 대비한 안전장치
+    if not sections:
+        print("   ⚠️ 형식을 못 읽어서 원문을 그대로 한 섹션에 담아요.")
+        sections = [{"title": "브리핑", "body": raw, "links": []}]
+    if not headline:
+        headline = ["오늘의 증시 브리핑"]
 
+    data = {"headline": headline, "sections": sections}
     print("🤖 요약 완료!\n")
     return data
 
