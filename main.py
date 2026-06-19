@@ -295,7 +295,8 @@ def summarize_with_claude(items, date_label, quotes=""):
 - 마크다운/HTML(**굵게**, <br>, # 등)은 쓰지 마세요. 글머리표는 위 규칙대로 "- "만 사용.
 - 본문에 "(뉴스 [3])" 같은 번호 표시는 쓰지 마세요. 출처는 오직 @LINK@ 줄로만 표시하세요.
 - 정말 중요한 핵심 수치·키워드는 ==이렇게== 등호 두 개로 감싸면 노란 형광펜이 됩니다.
-  남용하지 말고 줄마다 핵심 1개 정도만.
+  남용하지 말고 줄마다 핵심 1개 정도만. (주제 라벨 전체나 콜론(:)을 ==로 감싸지 말고, 짧은 단어/수치만 감싸세요)
+- 등락은 ▲/▼ 또는 +/- 부호와 함께 적으면 자동으로 색이 입혀져요(상승=빨강, 하락=파랑). 예: "▲18.1%", "▼7.7%"
 - @SUMMARY@ 한 줄 요약은 친근한 한 문장("~예요")으로 부드럽게 써서 먼저 감을 잡게 하세요.
 
 [오늘의 주요 시세] (전일 대비)
@@ -365,12 +366,15 @@ def _heading(text):
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}}
 
 
-def _run(content, highlight=False, bold=False):
-    """글자 한 토막. highlight=True면 노란 형광펜을 칠합니다."""
+def _run(content, highlight=False, bold=False, color=None):
+    """글자 한 토막. color가 있으면 글자색, 아니면 highlight=True일 때 노란 형광펜."""
+    content = content.replace("==", "")   # 짝이 안 맞아 남은 강조 기호는 제거
     rt = {"type": "text", "text": {"content": content[:2000]}}
     ann = {}
-    if highlight:
-        ann["color"] = "yellow_background"   # 노션의 노란 형광펜
+    if color:
+        ann["color"] = color                 # "red"(상승) / "blue"(하락) 글자색
+    elif highlight:
+        ann["color"] = "yellow_background"    # 노란 형광펜
     if bold:
         ann["bold"] = True
     if ann:
@@ -378,18 +382,46 @@ def _run(content, highlight=False, bold=False):
     return rt
 
 
+# 등락 표시를 찾는 패턴: ==강조== | ▲16.7% 같은 화살표 수치 | +17%/-7.7% 같은 부호 수치
+_MARK_PATTERN = None
+
+
+def _direction_color(seg):
+    """등락 토막이 상승이면 'red'(빨강), 하락이면 'blue'(파랑)."""
+    s = seg.strip()
+    if "▲" in s or s.startswith("+"):
+        return "red"
+    if "▼" in s or s.startswith("-"):
+        return "blue"
+    return None
+
+
 def _rich_runs(text, bold=False):
     """
-    ==이렇게== 등호 두 개로 감싼 부분을 노란 형광펜으로 칠한
-    rich_text 배열을 만듭니다. (나머지는 일반 글자)
+    노션 rich_text 배열을 만듭니다.
+    - ==이렇게==  : 노란 형광펜 (단, 안에 ▲/▼가 있으면 상승=빨강/하락=파랑 글자색)
+    - ▲16.7% / ▼7.7% / +17% / -3.2% : 상승=빨강, 하락=파랑 (굵게)
+    - 나머지 : 일반 글자
     """
     import re
+    global _MARK_PATTERN
+    if _MARK_PATTERN is None:
+        _MARK_PATTERN = re.compile(r"==(.+?)==|([▲▼]\s?[\d.,]+%?|[+\-]\d[\d.,]*%)")
     runs = []
     pos = 0
-    for m in re.finditer(r"==(.+?)==", text):
+    for m in _MARK_PATTERN.finditer(text):
         if m.start() > pos:
             runs.append(_run(text[pos:m.start()], bold=bold))
-        runs.append(_run(m.group(1), highlight=True, bold=bold))
+        if m.group(1) is not None:           # ==강조==
+            seg = m.group(1)
+            color = _direction_color(seg)
+            if color:
+                runs.append(_run(seg, color=color, bold=True))
+            else:
+                runs.append(_run(seg, highlight=True, bold=bold))
+        else:                                # 등락 수치(▲▼ 또는 +/-)
+            seg = m.group(2)
+            runs.append(_run(seg, color=_direction_color(seg), bold=True))
         pos = m.end()
     if pos < len(text):
         runs.append(_run(text[pos:], bold=bold))
