@@ -139,13 +139,55 @@ def _clean_text(html_text):
     return text.strip()
 
 
+# 받아올 시세 목록 (이름, 야후 파이낸스 심볼)
+QUOTE_SYMBOLS = [
+    ("코스피", "^KS11"),
+    ("코스닥", "^KQ11"),
+    ("S&P500", "^GSPC"),
+    ("나스닥 종합", "^IXIC"),
+    ("원/달러 환율", "KRW=X"),
+    ("비트코인", "BTC-USD"),
+    ("이더리움", "ETH-USD"),
+]
+
+
+def fetch_market_quotes():
+    """
+    주요 지수·환율·코인의 '현재가'와 '전일 대비 등락률'을 무료로 받아옵니다.
+    (야후 파이낸스 차트 API, API 키 불필요. 실패한 항목은 그냥 건너뜁니다.)
+    """
+    print("📊 시세(지수·환율·코인) 수집 중...")
+    headers = {"User-Agent": "Mozilla/5.0 (briefing-bot)"}
+    lines = []
+    for name, sym in QUOTE_SYMBOLS:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=2d"
+            r = requests.get(url, headers=headers, timeout=10)
+            meta = r.json()["chart"]["result"][0]["meta"]
+            price = meta.get("regularMarketPrice")
+            # 진짜 '전일 종가'를 우선 사용 (없으면 차트 기준 전일 종가)
+            prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+            if price is None:
+                continue
+            if prev:
+                pct = (price / prev - 1) * 100
+                arrow = "▲" if pct >= 0 else "▼"
+                lines.append(f"- {name}: {price:,.2f} ({arrow}{abs(pct):.2f}%)")
+            else:
+                lines.append(f"- {name}: {price:,.2f}")
+        except Exception as e:
+            print(f"   ⚠️ {name}({sym}) 시세 실패(건너뜀): {e}")
+    print(f"📊 시세 {len(lines)}건 수집 완료\n")
+    return "\n".join(lines)
+
+
 # ══════════════════════════════════════════════════════════
 # 2단계: Claude로 요약
 # ══════════════════════════════════════════════════════════
-def summarize_with_claude(items, date_label):
+def summarize_with_claude(items, date_label, quotes=""):
     """
-    모은 뉴스를 Claude에게 주고, 정해진 7개 구조의 브리핑을
-    JSON 형태로 받아옵니다. (JSON이라야 노션에 깔끔히 옮길 수 있어요)
+    모은 뉴스와 시세를 Claude에게 주고, 정해진 7개 구조의 브리핑을
+    표시(@SECTION@ 등) 형식으로 받아옵니다.
     """
     print("🤖 2단계: Claude가 뉴스를 요약하는 중입니다...")
     client = Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=3)
@@ -167,14 +209,26 @@ def summarize_with_claude(items, date_label):
 한국어 증시 브리핑을 작성하세요.
 
 [작성 규칙]
-- 친근한 설명체("~예요", "~인데요")로, 너무 짧지 않게 "왜 그런지"까지 풀어서 설명하세요.
-- 아래 뉴스에 근거해서 쓰고, 근거가 부족한 항목은 솔직히 "관련 뉴스가 적었어요"라고 쓰세요.
+- 아래 뉴스와 시세에 근거해서 쓰고, 근거가 부족한 항목은 솔직히 "관련 뉴스가 적었음"이라고 쓰세요.
 - 절대 사실을 지어내지 마세요.
 - 각 섹션마다 참고한 뉴스 링크를 @LINK@ 줄로 넣으세요.
-- 본문에는 마크다운/HTML 표시(**굵게**, <br>, #, - 목록기호 등)를 쓰지 마세요.
-  일반 문장과 엔터(줄바꿈)만 사용하세요. (노션에 그대로 글자로 보이기 때문이에요)
-- 단, 정말 중요한 핵심 수치·키워드(예: 지수 등락, 가격, %, 핵심 사건명)는 ==이렇게== 등호 두 개로 감싸세요.
-  그러면 노션에서 노란 형광펜으로 칠해져요. 남용하지 말고 섹션당 2~4개만, 가장 중요한 것에만 쓰세요.
+- [오늘의 주요 시세]의 지수·환율·코인 수치(등락률 포함)를 해당 섹션 본문에 반드시 활용하세요.
+  (해외 증시 섹션엔 S&P500/나스닥/코인, 국내 증시 섹션엔 코스피/코스닥/환율 수치를 꼭 넣기)
+
+[본문 작성 스타일 — 아주 중요]
+- 줄글(긴 문단)로 풀어 쓰지 말고, '개조식 글머리표'로 정리하세요. 다음 규칙을 지키세요:
+  · 한 줄에 한 주제. 형식은 "- 주제키워드: 핵심 내용" (주제 뒤에 콜론:)
+  · 인과관계는 화살표 → , 의미 풀이는 등호 = 로 간결하게 연결
+    (예: "- 국고채 금리: 3년물 ==연 3.784%==까지 상승 → 채권가격 하락 = 금리 인상 반영 신호")
+  · 부연/세부는 그 아래 두 칸 들여쓴 하위 글머리표("  - ")로 1~2개 덧붙일 수 있음
+  · 문장은 "~음/~함/~됨" 같은 간결한 개조식 어미로 끝맺기 (긴 설명체 금지)
+- 마크다운/HTML(**굵게**, <br>, # 등)은 쓰지 마세요. 글머리표는 위 규칙대로 "- "만 사용.
+- 정말 중요한 핵심 수치·키워드는 ==이렇게== 등호 두 개로 감싸면 노란 형광펜이 됩니다.
+  남용하지 말고 줄마다 핵심 1개 정도만.
+- @SUMMARY@ 한 줄 요약은 친근한 한 문장("~예요")으로 부드럽게 써서 먼저 감을 잡게 하세요.
+
+[오늘의 주요 시세] (전일 대비)
+{quotes if quotes else "(시세 수집 실패 — 뉴스 내용 기반으로만 작성)"}
 
 [뉴스 목록]
 {news_block}
@@ -355,6 +409,47 @@ def _bullet(text, url=None):
             "bulleted_list_item": {"rich_text": _rich_runs(text)}}
 
 
+def _label_runs(content):
+    """'주제: 내용' 형태면 주제(콜론 앞)를 굵게, 내용은 형광펜 파싱합니다."""
+    if ":" in content:
+        label, rest = content.split(":", 1)
+        return [_run(label.strip() + ": ", bold=True)] + _rich_runs(rest.strip())
+    return _rich_runs(content)
+
+
+def _bullets_from_body(text):
+    """
+    개조식 본문을 글머리표 블록으로 변환합니다.
+    '- '로 시작하면 상위 항목, '  - '(두 칸 들여쓰기)면 직전 상위의 하위 항목.
+    글머리표가 전혀 없으면 그냥 문단으로 처리합니다.
+    """
+    blocks = []
+    last_top = None
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        # 맨 앞 글머리 기호 제거
+        content = stripped
+        for p in ("- ", "• ", "* ", "-", "•", "*"):
+            if content.startswith(p):
+                content = content[len(p):].strip()
+                break
+        block = {"object": "block", "type": "bulleted_list_item",
+                 "bulleted_list_item": {"rich_text": _label_runs(content)}}
+        if indent >= 2 and last_top is not None:
+            # 하위 항목 → 직전 상위 항목의 자식으로 넣음
+            last_top["bulleted_list_item"].setdefault("children", []).append(block)
+        else:
+            blocks.append(block)
+            last_top = block
+    # 글머리표가 하나도 안 잡혔으면 문단으로 (안전장치)
+    if not blocks:
+        return [_paragraph(p) for p in _split_paragraphs(text)]
+    return blocks
+
+
 def _callout(text, emoji="💡"):
     """눈에 띄는 강조 박스. 섹션의 '한 줄 요약'을 여기에 넣어요(굵게 + 형광펜)."""
     return {"object": "block", "type": "callout",
@@ -378,10 +473,10 @@ def build_notion_blocks(data, date_label):
         summary = sec.get("summary", "")
         if summary:
             blocks.append(_callout(summary))
-        # 그다음 상세 본문을 문단별로 넣습니다(노션 한 블록당 글자 제한 대비).
+        # 그다음 상세 본문을 개조식 글머리표로 넣습니다.
         body = sec.get("body", "")
-        for para in _split_paragraphs(body):
-            blocks.append(_paragraph(para))
+        for blk in _bullets_from_body(body):
+            blocks.append(blk)
         # 출처 링크
         links = sec.get("links", [])
         if links:
@@ -467,7 +562,8 @@ def main():
         print("오늘은 모인 뉴스가 없어요. (주말·휴일이거나 출처가 일시적으로 막혔을 수 있어요)")
         return
 
-    data = summarize_with_claude(items, date_label)
+    quotes = fetch_market_quotes()
+    data = summarize_with_claude(items, date_label, quotes)
     create_notion_page(data, date_label)
 
 
