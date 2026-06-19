@@ -1,0 +1,7 @@
+# 이 프로그램이 쓰는 외부 부품(라이브러리) 목록입니다.
+# "pip install -r requirements.txt" 한 줄로 모두 설치됩니다.
+
+feedparser==6.0.11      # RSS 뉴스 읽기
+anthropic==0.40.0       # Claude API (요약)
+requests==2.32.3        # 노션 API 호출(인터넷 통신)
+python-dotenv==1.0.1    # .env 파일에서 비밀값 불러오기

@@ -1,0 +1,36 @@
+name: 증시 브리핑 자동 작성
+
+# 언제 실행할지 정합니다.
+on:
+  schedule:
+    # 깃허브는 UTC(세계표준시) 기준입니다.
+    # 한국 아침 07:00 = UTC 전날 22:00 이므로 "0 22 * * *" 입니다.
+    - cron: "0 22 * * *"
+  # 버튼을 눌러 수동으로도 실행할 수 있게 합니다(테스트용).
+  workflow_dispatch:
+
+jobs:
+  run-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      # 1) 코드 내려받기
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      # 2) 파이썬 준비
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3) 필요한 부품 설치
+      - name: 라이브러리 설치
+        run: pip install -r requirements.txt
+
+      # 4) 프로그램 실행 (비밀값은 GitHub Secrets에서 가져옵니다)
+      - name: 브리핑 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+        run: python main.py
