@@ -178,36 +178,46 @@ def summarize_with_claude(items, date_label):
 {news_block}
 
 [출력 형식]
-아래 형식을 "그대로" 지켜서 작성하세요. 표시(@HEADLINE@, @SECTION@, @LINK@)는 정확히 그대로 쓰고,
+아래 형식을 "그대로" 지켜서 작성하세요. 표시(@HEADLINE@, @SECTION@, @SUMMARY@, @LINK@)는 정확히 그대로 쓰고,
 코드블록(```)이나 다른 설명은 넣지 마세요. 링크 줄은 "제목 ||| 주소" 형태로 쓰세요.
 
+각 섹션은 반드시 이 순서로 씁니다:
+  @SUMMARY@ 한 문장으로 끝내는 그 섹션의 핵심 (먼저 읽고 바로 이해되게)
+  그 아래에 "왜 그런지"까지 풀어쓴 상세 본문 (지금처럼 충분히 길고 친절하게)
+
 @HEADLINE@
-- (오늘의 핵심 한 줄)
-- (오늘의 핵심 한 줄)
-- (오늘의 핵심 한 줄)
+- (오늘 전체를 관통하는 핵심 한 줄)
+- (핵심 한 줄)
+- (핵심 한 줄)
 
 @SECTION@ 거시경제 — 큰 그림
-(본문. 여러 문단 가능. 따옴표·줄바꿈 자유롭게 사용해도 됩니다.)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문. 여러 문단 가능. 따옴표·줄바꿈 자유롭게 사용해도 됩니다.)
 @LINK@ 기사 제목 ||| https://링크주소
 
 @SECTION@ 해외 증시 — 미국 & 암호화폐
-(본문)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문)
 @LINK@ 기사 제목 ||| https://링크주소
 
 @SECTION@ 국내 증시 — 코스피 & 코스닥
-(본문)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문)
 @LINK@ 기사 제목 ||| https://링크주소
 
 @SECTION@ 섹터 — 오늘 움직인 업종
-(본문)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문)
 @LINK@ 기사 제목 ||| https://링크주소
 
 @SECTION@ 개별 주식 — 눈에 띈 종목
-(본문)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문)
 @LINK@ 기사 제목 ||| https://링크주소
 
 @SECTION@ 관전 포인트 — 오늘·이번 주 챙길 것
-(본문)
+@SUMMARY@ (이 섹션 핵심 한 문장)
+(상세 본문)
 @LINK@ 기사 제목 ||| https://링크주소
 """
 
@@ -218,7 +228,7 @@ def summarize_with_claude(items, date_label):
         chunks = []
         with client.messages.stream(
             model=CLAUDE_MODEL,
-            max_tokens=8000,  # 6개 섹션을 길게 쓰므로 넉넉히
+            max_tokens=12000,  # 요약+상세 6개 섹션이라 넉넉히 (잘림 방지)
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
             for text in stream.text_stream:
@@ -247,9 +257,13 @@ def summarize_with_claude(items, date_label):
             continue
         if s.startswith("@SECTION@"):
             title = s[len("@SECTION@"):].strip()
-            cur = {"title": title, "body_lines": [], "links": []}
+            cur = {"title": title, "summary": "", "body_lines": [], "links": []}
             sections.append(cur)
             mode = "section"
+            continue
+        if s.startswith("@SUMMARY@"):
+            if cur is not None:
+                cur["summary"] = s[len("@SUMMARY@"):].strip()
             continue
         if s.startswith("@LINK@"):
             rest = s[len("@LINK@"):].strip()
@@ -304,6 +318,15 @@ def _bullet(text, url=None):
             "bulleted_list_item": {"rich_text": [rich]}}
 
 
+def _callout(text, emoji="💡"):
+    """눈에 띄는 강조 박스. 섹션의 '한 줄 요약'을 여기에 넣어요."""
+    return {"object": "block", "type": "callout",
+            "callout": {"rich_text": [{"type": "text",
+                                       "text": {"content": text[:2000]},
+                                       "annotations": {"bold": True}}],
+                        "icon": {"emoji": emoji}}}
+
+
 def build_notion_blocks(data, date_label):
     """Claude가 준 JSON을 노션 '블록'(문단/제목/목록)으로 바꿉니다."""
     blocks = []
@@ -316,7 +339,11 @@ def build_notion_blocks(data, date_label):
     # 2~7. 나머지 섹션들
     for sec in data.get("sections", []):
         blocks.append(_heading(sec.get("title", "")))
-        # 본문은 문단별로 나눠서 넣습니다(노션 한 블록당 글자 제한 대비).
+        # 섹션 한 줄 요약을 강조 박스로 먼저 보여줍니다(핵심 → 상세 순서).
+        summary = sec.get("summary", "")
+        if summary:
+            blocks.append(_callout(summary))
+        # 그다음 상세 본문을 문단별로 넣습니다(노션 한 블록당 글자 제한 대비).
         body = sec.get("body", "")
         for para in _split_paragraphs(body):
             blocks.append(_paragraph(para))
