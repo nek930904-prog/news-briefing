@@ -173,6 +173,8 @@ def summarize_with_claude(items, date_label):
 - 각 섹션마다 참고한 뉴스 링크를 @LINK@ 줄로 넣으세요.
 - 본문에는 마크다운/HTML 표시(**굵게**, <br>, #, - 목록기호 등)를 쓰지 마세요.
   일반 문장과 엔터(줄바꿈)만 사용하세요. (노션에 그대로 글자로 보이기 때문이에요)
+- 단, 정말 중요한 핵심 수치·키워드(예: 지수 등락, 가격, %, 핵심 사건명)는 ==이렇게== 등호 두 개로 감싸세요.
+  그러면 노션에서 노란 형광펜으로 칠해져요. 남용하지 말고 섹션당 2~4개만, 가장 중요한 것에만 쓰세요.
 
 [뉴스 목록]
 {news_block}
@@ -305,25 +307,58 @@ def _heading(text):
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}}
 
 
+def _run(content, highlight=False, bold=False):
+    """글자 한 토막. highlight=True면 노란 형광펜을 칠합니다."""
+    rt = {"type": "text", "text": {"content": content[:2000]}}
+    ann = {}
+    if highlight:
+        ann["color"] = "yellow_background"   # 노션의 노란 형광펜
+    if bold:
+        ann["bold"] = True
+    if ann:
+        rt["annotations"] = ann
+    return rt
+
+
+def _rich_runs(text, bold=False):
+    """
+    ==이렇게== 등호 두 개로 감싼 부분을 노란 형광펜으로 칠한
+    rich_text 배열을 만듭니다. (나머지는 일반 글자)
+    """
+    import re
+    runs = []
+    pos = 0
+    for m in re.finditer(r"==(.+?)==", text):
+        if m.start() > pos:
+            runs.append(_run(text[pos:m.start()], bold=bold))
+        runs.append(_run(m.group(1), highlight=True, bold=bold))
+        pos = m.end()
+    if pos < len(text):
+        runs.append(_run(text[pos:], bold=bold))
+    if not runs:
+        runs.append(_run(text, bold=bold))
+    return runs
+
+
 def _paragraph(text):
     return {"object": "block", "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[:2000]}}]}}
+            "paragraph": {"rich_text": _rich_runs(text)}}
 
 
 def _bullet(text, url=None):
-    rich = {"type": "text", "text": {"content": text[:2000]}}
     if url:
-        rich["text"]["link"] = {"url": url}
+        rich = {"type": "text", "text": {"content": text[:2000], "link": {"url": url}}}
+        return {"object": "block", "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [rich]}}
+    # 링크가 없는 일반 항목(예: 오늘의 핵심)은 형광펜 표시를 살립니다.
     return {"object": "block", "type": "bulleted_list_item",
-            "bulleted_list_item": {"rich_text": [rich]}}
+            "bulleted_list_item": {"rich_text": _rich_runs(text)}}
 
 
 def _callout(text, emoji="💡"):
-    """눈에 띄는 강조 박스. 섹션의 '한 줄 요약'을 여기에 넣어요."""
+    """눈에 띄는 강조 박스. 섹션의 '한 줄 요약'을 여기에 넣어요(굵게 + 형광펜)."""
     return {"object": "block", "type": "callout",
-            "callout": {"rich_text": [{"type": "text",
-                                       "text": {"content": text[:2000]},
-                                       "annotations": {"bold": True}}],
+            "callout": {"rich_text": _rich_runs(text, bold=True),
                         "icon": {"emoji": emoji}}}
 
 
