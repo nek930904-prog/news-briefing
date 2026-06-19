@@ -148,7 +148,8 @@ def summarize_with_claude(items, date_label):
     JSON 형태로 받아옵니다. (JSON이라야 노션에 깔끔히 옮길 수 있어요)
     """
     print("🤖 2단계: Claude가 뉴스를 요약하는 중입니다...")
-    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    # timeout 넉넉히, 재시도 횟수 지정
+    client = Anthropic(api_key=ANTHROPIC_API_KEY, timeout=60.0, max_retries=3)
 
     # 뉴스 목록을 번호 붙여 텍스트로 정리 (Claude가 링크를 인용할 수 있게)
     news_lines = []
@@ -188,11 +189,22 @@ def summarize_with_claude(items, date_label):
 }}
 """
 
-    message = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=8000,  # 6개 섹션을 길게 쓰므로 넉넉히 (4000은 중간에 잘릴 수 있음)
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=8000,  # 6개 섹션을 길게 쓰므로 넉넉히 (4000은 중간에 잘릴 수 있음)
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        # 연결 오류 등이 나면, 진짜 속 원인까지 화면에 찍어서 진단하기 쉽게 합니다.
+        print("❌ Claude 호출 실패:", type(e).__name__, "-", e)
+        cause = getattr(e, "__cause__", None)
+        if cause is not None:
+            print("   ↳ 실제 원인:", type(cause).__name__, "-", cause)
+        print("   진단정보: 키 길이", len(ANTHROPIC_API_KEY),
+              "/ sk-ant- 시작:", ANTHROPIC_API_KEY.startswith("sk-ant-"),
+              "/ 모델:", CLAUDE_MODEL)
+        raise
     raw = message.content[0].text.strip()
 
     # 혹시 코드블록(```)으로 감싸서 왔으면 벗겨냅니다.
