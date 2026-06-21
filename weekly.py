@@ -195,8 +195,10 @@ def main():
     data["headline_label"] = "📌 이번 주 핵심"
     print("🤖 작성 완료!\n")
 
-    # 4) 노션에 작성
-    title = f"주간 증시 브리핑 - {today.strftime('%Y-%m-%d')} 주간"
+    # 4) 노션에 작성 (제목·맨 위에 작성 시각 표시)
+    now = datetime.now(KST)
+    data["generated_at"] = now.strftime("%Y-%m-%d %H:%M (%a) KST")
+    title = f"주간 증시 브리핑 - {today.strftime('%Y-%m-%d')} 주간 ({now.strftime('%H:%M')} 작성)"
     create_notion_page(data, title)
 
 

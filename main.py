@@ -493,9 +493,21 @@ def _callout(text, emoji="💡"):
                         "icon": {"emoji": emoji}}}
 
 
+def _caption(text):
+    """페이지 맨 위에 들어가는 작은 회색 안내 줄 (작성 시각 등)."""
+    return {"object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": text[:2000]},
+                                         "annotations": {"italic": True, "color": "gray"}}]}}
+
+
 def build_notion_blocks(data, date_label):
     """Claude가 준 JSON을 노션 '블록'(문단/제목/목록)으로 바꿉니다."""
     blocks = []
+
+    # 0. 작성 시각 (맨 위 회색 한 줄)
+    gen = data.get("generated_at")
+    if gen:
+        blocks.append(_caption(f"🕖 작성 시각: {gen}"))
 
     # 1. 핵심 요약 (3줄) — 일간은 "오늘의 핵심", 주간은 "이번 주 핵심"
     blocks.append(_heading(data.get("headline_label", "📌 오늘의 핵심")))
@@ -599,7 +611,9 @@ def main():
 
     quotes = fetch_market_quotes()
     data = summarize_with_claude(items, date_label, quotes)
-    create_notion_page(data, f"증시 브리핑 - {date_label} 아침")
+    now = datetime.now(KST)
+    data["generated_at"] = now.strftime("%Y-%m-%d %H:%M (%a) KST")
+    create_notion_page(data, f"증시 브리핑 - {date_label} 아침 ({now.strftime('%H:%M')} 작성)")
 
 
 if __name__ == "__main__":
