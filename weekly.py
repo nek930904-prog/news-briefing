@@ -11,7 +11,8 @@
 """
 
 import sys
-from datetime import datetime, timedelta
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -64,17 +65,69 @@ INDEX_SYMBOLS = [
 
 
 def _weekly_change(symbol):
-    """한 종목의 '약 1주일간' 등락률(%)을 구합니다. (야후 차트, 키 불필요)"""
+    """
+    한 종목의 'ISO 주(월~일)' 기준 주간 등락률(%)을 구합니다. (야후 차트, 키 불필요)
+
+      - 현재값 = 이번 주(월~현재)에 속한 거래일들의 '가장 최근 종가'
+      - 기준값 = 이번 주 이전 주들 중 '가장 마지막 거래일'의 종가
+                 (요일 고정 없이 데이터에 실제 존재하는 직전 거래일 사용
+                  → 금요일 휴장이면 목요일, 연휴면 그 앞 거래일로 자동 하향)
+      - 등락률 = (현재값 ÷ 기준값 − 1) × 100
+      - 이번 주에 거래일이 하나도 없으면(연휴 등) → 최근 두 거래주의 마지막 거래일끼리 비교(fallback)
+
+    반환: (현재값, 등락률%) 또는 (None, None)
+    """
     headers = {"User-Agent": "Mozilla/5.0 (briefing-bot)"}
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=7d"
+    # 직전 주 거래일이 항상 포함되도록 넉넉히 1개월치를 받습니다.
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1mo"
     r = requests.get(url, headers=headers, timeout=10)
     result = r.json()["chart"]["result"][0]
-    closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
-    if len(closes) < 2:
+
+    timestamps = result.get("timestamp") or []
+    closes = result["indicators"]["quote"][0].get("close") or []
+    gmtoffset = result.get("meta", {}).get("gmtoffset", 0)  # 거래소 현지시각 보정(초)
+
+    # (거래소 현지 날짜, 종가) 쌍을 시간순으로 정리 (빈 종가는 제외)
+    bars = []
+    for ts, c in zip(timestamps, closes):
+        if c is None or ts is None:
+            continue
+        local_date = (datetime.fromtimestamp(ts, tz=timezone.utc)
+                      + timedelta(seconds=gmtoffset)).date()
+        bars.append((local_date, c))
+    if len(bars) < 2:
         return None, None
-    first, last = closes[0], closes[-1]
-    pct = (last / first - 1) * 100
-    return last, pct
+    bars.sort(key=lambda x: x[0])
+
+    def week_key(d):
+        iso = d.isocalendar()      # (ISO년, ISO주, 요일)
+        return (iso[0], iso[1])    # 같은 ISO 주면 같은 키
+
+    # 각 ISO 주의 '마지막 거래일 종가'를 주 순서대로 보관
+    last_close_by_week = OrderedDict()
+    for d, c in bars:
+        last_close_by_week[week_key(d)] = c
+    weeks = list(last_close_by_week.items())   # [(주키, 마지막종가), ...] 오름차순
+
+    # '이번 주'는 실행 시점(거래소 현지시각) 기준 ISO 주
+    now_local = (datetime.now(timezone.utc) + timedelta(seconds=gmtoffset))
+    cur_wk = week_key(now_local.date())
+
+    if cur_wk in last_close_by_week:
+        cur_close = last_close_by_week[cur_wk]
+        prior = [(wk, c) for wk, c in weeks if wk < cur_wk]
+        if not prior:
+            return None, None
+        base_close = prior[-1][1]
+    else:
+        # 이번 주에 거래일이 하나도 없음 → 최근 두 거래주 비교
+        if len(weeks) < 2:
+            return None, None
+        cur_close = weeks[-1][1]
+        base_close = weeks[-2][1]
+
+    pct = (cur_close / base_close - 1) * 100
+    return cur_close, pct
 
 
 def fetch_weekly_performance(symbols, label):
