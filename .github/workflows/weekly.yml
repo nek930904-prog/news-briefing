@@ -1,11 +1,8 @@
 name: 주간 증시 브리핑 자동 작성
 
 on:
-  schedule:
-    # 한국 일요일 18:17 = UTC 일요일 09:17 이므로 "17 9 * * 0" 입니다.
-    # (cron의 요일에서 0 = 일요일. 정각 누락을 피하려 17분으로 비껴 둡니다.)
-    - cron: "17 9 * * 0"
-  # 버튼으로 수동 실행도 가능하게 (테스트용)
+  # 실행은 외부 스케줄러(cron-job.org)가 매주 일요일 18:00(KST)에 이 워크플로우를
+  # workflow_dispatch API로 깨워서 합니다. (GitHub 자체 schedule은 누락이 잦아 제거)
   workflow_dispatch:
 
 jobs:
