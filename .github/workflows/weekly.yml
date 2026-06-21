@@ -1,7 +1,7 @@
 name: 주간 증시 브리핑 자동 작성
 
 on:
-  # 실행은 외부 스케줄러(cron-job.org)가 매주 일요일 18:00(KST)에 이 워크플로우를
+  # 실행은 외부 스케줄러(cron-job.org)가 매주 일요일 07:00(KST)에 이 워크플로우를
   # workflow_dispatch API로 깨워서 합니다. (GitHub 자체 schedule은 누락이 잦아 제거)
   workflow_dispatch:
 
